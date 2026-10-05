@@ -28,19 +28,27 @@ import {
 } from "../scenarios/scenarioViewModel";
 import { removeProject, updateProject } from "../projects/projectViewModel";
 import { simulateProject } from "../../shared/domain/simulation";
+import {
+  DEFAULT_MODE,
+  DEFAULT_MODULE,
+  loadSession,
+  restoreSession,
+  saveSession,
+  type LabModule,
+} from "./workspaceSession";
+
+export type { LabModule };
 
 export type LabStatus =
   "loading" | "ready" | "editing" | "simulating" | "error" | "completed";
-export type LabModule =
-  "projects" | "graph" | "simulation" | "scenarios" | "archive";
 
 export function useLatencyLab() {
   const repository = useMemo(() => new ProjectRepository(), []);
   const [document, setDocument] = useState<WorkspaceDocument | null>(null);
   const documentRef = useRef<WorkspaceDocument | null>(null);
   const [status, setStatus] = useState<LabStatus>("loading");
-  const [module, setModule] = useState<LabModule>("simulation");
-  const [mode, setMode] = useState<SimulationMode>("expected");
+  const [module, setModule] = useState<LabModule>(DEFAULT_MODULE);
+  const [mode, setMode] = useState<SimulationMode>(DEFAULT_MODE);
   const [comparisonIds, setComparisonIds] = useState<{
     baselineId: string;
     comparisonId: string;
@@ -93,11 +101,20 @@ export function useLatencyLab() {
       .load()
       .then(({ document: loaded, recovered }) => {
         if (!mounted) return;
-        documentRef.current = loaded;
-        setDocument(loaded);
+        const restored = restoreSession(loaded, loadSession());
+        documentRef.current = restored.document;
+        setDocument(restored.document);
+        setModule(restored.module);
+        setMode(restored.mode);
+        setComparisonIds({
+          baselineId: restored.baselineScenarioId,
+          comparisonId: restored.comparisonScenarioId,
+        });
         setStatus("ready");
+        const notices = [...restored.notices];
         if (recovered)
-          setNotice("已载入示例工作区；后续修改会自动保存到此设备。");
+          notices.unshift("已载入示例工作区；后续修改会自动保存到此设备。");
+        if (notices.length) setNotice(notices.join(" "));
       })
       .catch(() => {
         if (!mounted) return;
@@ -108,6 +125,28 @@ export function useLatencyLab() {
       mounted = false;
     };
   }, [repository]);
+
+  const activeProjectId = activeProject?.id ?? "";
+  const baselineScenarioId = baselineScenario?.id ?? "";
+  const comparisonScenarioId = comparisonScenario?.id ?? "";
+
+  useEffect(() => {
+    if (!document) return;
+    saveSession({
+      projectId: activeProjectId,
+      module,
+      mode,
+      baselineScenarioId,
+      comparisonScenarioId,
+    });
+  }, [
+    document,
+    activeProjectId,
+    module,
+    mode,
+    baselineScenarioId,
+    comparisonScenarioId,
+  ]);
 
   const commit = useCallback(
     (next: WorkspaceDocument, nextStatus: LabStatus = "editing") => {
