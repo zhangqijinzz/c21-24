@@ -38,6 +38,19 @@ export interface WorkspaceDocument {
 
 export type SimulationMode = "low" | "expected" | "high";
 
+export type LabModule =
+  "projects" | "graph" | "simulation" | "scenarios" | "archive";
+
+export interface WorkSession {
+  version: 1;
+  activeProjectId: string | null;
+  module: LabModule | null;
+  mode: SimulationMode | null;
+  baselineScenarioId: string | null;
+  comparisonScenarioId: string | null;
+  updatedAt: number;
+}
+
 export interface TimelineEntry {
   nodeId: string;
   startMs: number;

@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ProjectRepository } from "../../shared/repositories/projectRepository";
+import { SessionRepository } from "../../shared/repositories/sessionRepository";
+import { applyWorkSession, DEFAULT_MODE, DEFAULT_MODULE } from "./workSession";
 import type {
+  LabModule,
   LatencyProject,
   SimulationMode,
   WorkspaceDocument,
@@ -31,16 +34,16 @@ import { simulateProject } from "../../shared/domain/simulation";
 
 export type LabStatus =
   "loading" | "ready" | "editing" | "simulating" | "error" | "completed";
-export type LabModule =
-  "projects" | "graph" | "simulation" | "scenarios" | "archive";
+export type { LabModule };
 
 export function useLatencyLab() {
   const repository = useMemo(() => new ProjectRepository(), []);
+  const sessionRepository = useMemo(() => new SessionRepository(), []);
   const [document, setDocument] = useState<WorkspaceDocument | null>(null);
   const documentRef = useRef<WorkspaceDocument | null>(null);
   const [status, setStatus] = useState<LabStatus>("loading");
-  const [module, setModule] = useState<LabModule>("simulation");
-  const [mode, setMode] = useState<SimulationMode>("expected");
+  const [module, setModule] = useState<LabModule>(DEFAULT_MODULE);
+  const [mode, setMode] = useState<SimulationMode>(DEFAULT_MODE);
   const [comparisonIds, setComparisonIds] = useState<{
     baselineId: string;
     comparisonId: string;
@@ -51,6 +54,7 @@ export function useLatencyLab() {
   );
   const queue = useRef(Promise.resolve());
   const revision = useRef(0);
+  const sessionReady = useRef(false);
   const activeProject =
     document?.projects.find(
       (project) => project.id === document.activeProjectId,
@@ -89,15 +93,24 @@ export function useLatencyLab() {
 
   useEffect(() => {
     let mounted = true;
-    void repository
-      .load()
-      .then(({ document: loaded, recovered }) => {
+    void Promise.all([repository.load(), sessionRepository.load()])
+      .then(([{ document: loaded, recovered }, session]) => {
         if (!mounted) return;
-        documentRef.current = loaded;
-        setDocument(loaded);
+        const restore = applyWorkSession(loaded, session);
+        documentRef.current = restore.document;
+        setDocument(restore.document);
+        setModule(restore.module);
+        setMode(restore.mode);
+        setComparisonIds(restore.comparisonIds);
         setStatus("ready");
-        if (recovered)
-          setNotice("已载入示例工作区；后续修改会自动保存到此设备。");
+        sessionReady.current = true;
+        const messages = [
+          ...(recovered
+            ? ["已载入示例工作区；后续修改会自动保存到此设备。"]
+            : []),
+          ...restore.fallbacks,
+        ];
+        if (messages.length) setNotice(messages.join(" "));
       })
       .catch(() => {
         if (!mounted) return;
@@ -107,7 +120,30 @@ export function useLatencyLab() {
     return () => {
       mounted = false;
     };
-  }, [repository]);
+  }, [repository, sessionRepository]);
+
+  const activeProjectId = document?.activeProjectId;
+  useEffect(() => {
+    if (!sessionReady.current || !activeProjectId) return;
+    sessionRepository.scheduleWrite({
+      version: 1,
+      activeProjectId,
+      module,
+      mode,
+      baselineScenarioId: comparisonIds.baselineId || null,
+      comparisonScenarioId: comparisonIds.comparisonId || null,
+      updatedAt: Date.now(),
+    });
+  }, [activeProjectId, module, mode, comparisonIds, sessionRepository]);
+
+  useEffect(() => {
+    const flush = () => sessionRepository.flush();
+    window.addEventListener("pagehide", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      flush();
+    };
+  }, [sessionRepository]);
 
   const commit = useCallback(
     (next: WorkspaceDocument, nextStatus: LabStatus = "editing") => {
